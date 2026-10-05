@@ -64,6 +64,7 @@ class DurationProfile:
     snap_window_sec: float = 3.0   # 吸附到最近 cue 的搜索窗口
     merge_gap_sec: float = 5.0     # 太短且与相邻段间隔小于此则合并
     overlap_merge_ratio: float = 0.5  # 重叠超过较短者的这一比例 → 合并
+    user_target_sec: Optional[float] = None  # duração média escolhida pelo usuário (limite rígido)
 
     def prompt_hint(self) -> str:
         """追加到 step1 / step2 提示词末尾，覆盖提示词里写死的时长规则。"""
@@ -78,6 +79,8 @@ class DurationProfile:
             f"- 每个片段目标时长 {_fmt_dur(lo)}–{_fmt_dur(hi)}，最短不少于 {_fmt_dur(self.min_clip_sec)}，最长不超过 {_fmt_dur(self.max_clip_sec)}\n"
             "- 上文中「至少 90 秒」「3–6 分钟」等具体数字一律以本节为准\n"
             "- 起止时间必须落在字幕行的边界上，直接引用字幕行的时间戳，不要自行推算\n"
+            + (f"- 用户指定每个片段平均时长约 {_fmt_dur(self.user_target_sec)}，这是硬性要求：较长的话题请拆成多个片段，绝不能超过 {_fmt_dur(self.max_clip_sec)}\n"
+               if self.user_target_sec else "")
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -145,11 +148,14 @@ def apply_overrides(
 
     if target_clip_seconds and target_clip_seconds > 0:
         t = float(target_clip_seconds)
-        lo = max(10.0, t * 0.6)
-        hi = max(lo + 5.0, t * 1.4)
+        # Faixa apertada em volta da média escolhida: o usuário espera que um corte
+        # de "45 s" fique perto de 45 s, não que vire 2–3 minutos.
+        lo = max(8.0, t * 0.75)
+        hi = max(lo + 4.0, t * 1.25)
         updates["target_clip_sec"] = (lo, hi)
-        updates["min_clip_sec"] = max(8.0, t * 0.4)
-        updates["max_clip_sec"] = max(hi + 10.0, t * 2.2)
+        updates["min_clip_sec"] = max(6.0, t * 0.6)
+        updates["max_clip_sec"] = max(hi + 4.0, min(t * 1.4, t + 30.0))
+        updates["user_target_sec"] = t
 
     if clip_count and clip_count > 0:
         n = int(clip_count)
@@ -396,19 +402,23 @@ def refine_timeline(items: Sequence[Dict[str, Any]], srt_entries: Sequence[Dict[
             prev = merged[-1]
             overlap = min(prev["_e"], it["_e"]) - max(prev["_s"], it["_s"])
             shorter = max(1e-6, min(prev["_e"] - prev["_s"], it["_e"] - it["_s"]))
-            if overlap > 0 and overlap / shorter >= profile.overlap_merge_ratio:
+            merged_len = max(prev["_e"], it["_e"]) - min(prev["_s"], it["_s"])
+            if overlap > 0 and overlap / shorter >= profile.overlap_merge_ratio and merged_len <= profile.max_clip_sec:
                 _merge_into(prev, it)
                 report["merged"].append({"kept": _title(prev), "absorbed": _title(it), "reason": f"重叠 {overlap:.1f}s"})
                 continue
             if overlap > 0 and cues:
                 # 小重叠：后者起点推到前者终点之后的第一条 cue
                 ni = prev["_ei"] + 1
-                if ni < len(cues) and cues[ni].start < it["_e"]:
+                if ni < len(cues) and cues[ni].start < it["_e"] - 1.0:
                     it["_s"], it["_si"] = cues[ni].start, ni
                     it["_ops"].append("shift_start")
-                else:
+                elif merged_len <= profile.max_clip_sec:
                     _merge_into(prev, it)
                     report["merged"].append({"kept": _title(prev), "absorbed": _title(it), "reason": "重叠且无法后移"})
+                    continue
+                else:
+                    report["dropped"].append({"outline": _title(it), "reason": "重叠且超出时长上限"})
                     continue
         merged.append(it)
 
@@ -424,7 +434,7 @@ def refine_timeline(items: Sequence[Dict[str, Any]], srt_entries: Sequence[Dict[
                     it["_ops"].append("extend")
                     report["extended"] += 1
             dur = it["_e"] - it["_s"]
-            if dur > profile.max_clip_sec:
+            if dur > profile.max_clip_sec and not profile.user_target_sec:
                 e, ei = _trim_to_max(it["_s"], it["_ei"], cues, profile.max_clip_sec)
                 if e < it["_e"]:
                     it["_e"], it["_ei"] = e, ei
@@ -444,6 +454,25 @@ def refine_timeline(items: Sequence[Dict[str, Any]], srt_entries: Sequence[Dict[
             else:
                 report["dropped"].append({"outline": _title(it), "reason": f"过短（{it['_e'] - it['_s']:.0f}s < {profile.min_clip_sec:.0f}s）且无法合并"})
         merged = result
+
+        # 4.5) Garantia final: nenhum corte acima do limite. Com duração escolhida pelo
+        # usuário, um trecho longo vira vários cortes (em fins de frase) em vez de um só.
+        final: List[Dict[str, Any]] = []
+        for it in merged:
+            if it["_e"] - it["_s"] <= profile.max_clip_sec + 0.5:
+                final.append(it)
+                continue
+            pieces = _split_long(it, cues, profile) if profile.user_target_sec else []
+            if pieces:
+                final.extend(pieces)
+                report["trimmed"] += 1
+                continue
+            e, ei = _trim_to_max(it["_s"], it["_ei"], cues, profile.max_clip_sec)
+            it["_e"], it["_ei"] = e, ei
+            it["_ops"].append("trim")
+            report["trimmed"] += 1
+            final.append(it)
+        merged = final
 
     # 5) 收尾：写回字段、重新编号
     out: List[Dict[str, Any]] = []
@@ -475,6 +504,45 @@ def refine_timeline(items: Sequence[Dict[str, Any]], srt_entries: Sequence[Dict[
         report["snap_offset_p50"] = so[len(so) // 2]
         report["snap_offset_p90"] = so[min(len(so) - 1, int(len(so) * 0.9))]
     return out, report
+
+
+def _split_long(it: Dict[str, Any], cues: List[_Cue], profile: DurationProfile) -> List[Dict[str, Any]]:
+    """Divide um trecho longo em pedaços perto da duração alvo, sempre em fim de frase."""
+    target = profile.user_target_sec or sum(profile.target_clip_sec) / 2
+    si = max(0, it["_si"]) if it["_si"] is not None else 0
+    while si < len(cues) and cues[si].start < it["_s"] - 1e-6:
+        si += 1
+    pieces: List[Dict[str, Any]] = []
+    i = si
+    n = 0
+    while i < len(cues) and cues[i].start < it["_e"] - 1e-6:
+        start = cues[i].start
+        j, best = i, None
+        while j < len(cues) and cues[j].end <= it["_e"] + 1e-6:
+            dur = cues[j].end - start
+            if dur > profile.max_clip_sec:
+                break
+            if dur >= profile.min_clip_sec and _ends_sentence(cues, j):
+                if best is None or abs(dur - target) < abs((cues[best].end - start) - target):
+                    best = j
+                if dur >= target:
+                    break
+            j += 1
+        if best is None:
+            # sem fim de frase na faixa: corta no limite em borda de legenda
+            best = max(i, j - 1)
+        if cues[best].end - start >= profile.min_clip_sec:
+            p = dict(it)
+            p["_s"], p["_e"], p["_si"], p["_ei"] = start, cues[best].end, i, best
+            p["_ops"] = list(it["_ops"]) + ["split"]
+            if n:
+                base = _title(it)
+                if isinstance(p.get("outline"), str):
+                    p["outline"] = f"{base} ({n + 1})"
+            pieces.append(p)
+            n += 1
+        i = best + 1
+    return pieces
 
 
 def _title(it: Dict[str, Any]) -> str:
