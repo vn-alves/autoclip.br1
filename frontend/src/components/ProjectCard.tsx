@@ -274,7 +274,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onDelete, onRetry, o
   const progressPercent = project.status === 'completed' ? 100 : 
                          project.status === 'failed' ? 0 :
                          isDownloading ? downloadProgress : // Exibe o progresso real do download durante o download
-                         isImporting ? 5 : // Exibe 5% de progresso para o status pendente, indicando espera por processamento
+                         isImporting ? Math.max(5, Math.min(99, downloadProgress)) : // Exibe 5% de progresso para o status pendente, indicando espera por processamento
                          project.current_step && project.total_steps ? 
                          Math.round((project.current_step / project.total_steps) * 100) : 
                          project.status === 'processing' ? 10 : 0

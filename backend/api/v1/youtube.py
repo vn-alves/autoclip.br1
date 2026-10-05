@@ -768,7 +768,7 @@ async def process_youtube_download_task(task_id: str, request: YouTubeDownloadRe
                 video_file_path = Path(video_path)
                 
                 # 根据视频信息选择合适的模型
-                model = "base"  # 默认使用平衡模型
+                model = os.getenv("AUTOCLIP_WHISPER_MODEL", "tiny")  # tiny: ~5x mais rápido que base
                 language = "auto"  # 默认自动检测语言
                 
                 # 可以根据视频标题判断内容类型
