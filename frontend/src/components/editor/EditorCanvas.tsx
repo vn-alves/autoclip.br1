@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Moveable, { type OnDrag, type OnDragEnd, type OnResize, type OnResizeEnd, type OnResizeStart } from 'react-moveable'
 import { BackgroundConfig, CANVAS_DIMENSIONS, CanvasFormat, NormalizedTransform, SubtitlePosition, SubtitleSegment, SubtitleStyle, SubtitleTransition, WordHighlight, VideoLayer, findActiveLayers } from './types'
 import SubtitleLayer from './SubtitleLayer'
+import { snapToCenter } from './centerSnap'
 
 interface EditorCanvasProps {
   format: CanvasFormat
@@ -74,6 +75,35 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   // fica transparente via CSS) para preservar toda a área interativa e os cálculos internos.
   // Este elemento acompanha os mesmos limites aplicados aos pontos, sem alterar o box real.
   const clampedOutlineRef = useRef<HTMLDivElement>(null)
+  const centerGuidesRef = useRef<HTMLDivElement>(null)
+  const snappedAxesRef = useRef({ x: false, y: false })
+  const clearCenterGuides = () => {
+    snappedAxesRef.current = { x: false, y: false }
+    if (centerGuidesRef.current) centerGuidesRef.current.style.display = 'none'
+  }
+  const dragWithCenterSnap = (target: HTMLElement, left: number, top: number) => {
+    if (!frameSize.width || !frameSize.height) return
+    const width = parseFloat(target.style.width || '0')
+    const height = parseFloat(target.style.height || '0')
+    const rotation = (selectedLayer?.transform.rotation ?? 0) * Math.PI / 180
+    // The proxy rotates around its center; the rendered video rotates around its origin.
+    const centerX = (width * Math.cos(rotation) - height * Math.sin(rotation)) / 2
+    const centerY = (width * Math.sin(rotation) + height * Math.cos(rotation)) / 2
+    const rect = frameRef.current?.getBoundingClientRect()
+    const x = snapToCenter(left, frameSize.width / 2 - centerX, snappedAxesRef.current.x, rect ? rect.width / frameSize.width : 1)
+    const y = snapToCenter(top, frameSize.height / 2 - centerY, snappedAxesRef.current.y, rect ? rect.height / frameSize.height : 1)
+    snappedAxesRef.current = { x: x.snapped, y: y.snapped }
+    target.style.left = `${x.position}px`
+    target.style.top = `${y.position}px`
+    const guides = centerGuidesRef.current
+    if (guides) {
+      guides.style.display = 'block'
+      guides.classList.toggle('ac-editor-center-guides--x', x.snapped)
+      guides.classList.toggle('ac-editor-center-guides--y', y.snapped)
+    }
+    syncVideoToProxy(target)
+    scheduleHandleClamp()
+  }
   // O retângulo do vídeo pode crescer muito além do frame. O Moveable precisa manter esse
   // retângulo real para calcular o zoom, mas suas alças não precisam ser desenhadas fora da
   // área visível. Reposicionamos apenas cada controle (e sua área clicável) na borda do frame;
@@ -243,6 +273,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     if (handleClampRafRef.current !== null) cancelAnimationFrame(handleClampRafRef.current)
   }, [])
 
+  useEffect(clearCenterGuides, [selectedLayerId, format, frameSize])
+
   // Fundo desfocado: um segundo <video>, mudo, espelhando play/pause/tempo do vídeo PRINCIPAL
   // (não das layers secundárias — o fundo sempre reflete o corte original).
   useEffect(() => {
@@ -308,10 +340,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   }
 
   const handleDrag = ({ target, left, top }: OnDrag) => {
-    target.style.left = `${left}px`
-    target.style.top = `${top}px`
-    syncVideoToProxy(target as HTMLElement)
-    scheduleHandleClamp()
+    dragWithCenterSnap(target as HTMLElement, left, top)
   }
 
   // Dois comportamentos de resize, escolhidos pelo fitMode da layer selecionada:
@@ -428,6 +457,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                 const startY = e.clientY
                 const startLeft = parseFloat(proxyEl.style.left || '0')
                 const startTop = parseFloat(proxyEl.style.top || '0')
+                clearCenterGuides()
+                const frameRect = frameRef.current?.getBoundingClientRect()
+                const scaleX = frameRect ? frameRect.width / frameSize.width : 1
+                const scaleY = frameRect ? frameRect.height / frameSize.height : 1
                 let moved = false
                 try { videoEl.setPointerCapture(e.pointerId) } catch { /* ignore */ }
                 const onMove = (ev: PointerEvent) => {
@@ -435,17 +468,15 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                   const dy = ev.clientY - startY
                   if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return
                   moved = true
-                  proxyEl.style.left = `${startLeft + dx}px`
-                  proxyEl.style.top = `${startTop + dy}px`
-                  syncVideoToProxy(proxyEl)
+                  dragWithCenterSnap(proxyEl, startLeft + dx / scaleX, startTop + dy / scaleY)
                   moveableRef.current?.updateRect()
-                  scheduleHandleClamp()
                 }
                 const onUp = (ev: PointerEvent) => {
                   try { videoEl.releasePointerCapture(ev.pointerId) } catch { /* ignore */ }
                   window.removeEventListener('pointermove', onMove)
                   window.removeEventListener('pointerup', onUp)
                   window.removeEventListener('pointercancel', onUp)
+                  clearCenterGuides()
                   if (moved) commitFromTarget(layer.id, proxyEl)
                 }
                 window.addEventListener('pointermove', onMove)
@@ -471,6 +502,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
             />
           )
         })}
+        </div>
+
+        <div ref={centerGuidesRef} className="ac-editor-center-guides" aria-hidden="true">
+          <div className="ac-editor-center-guide ac-editor-center-guide--vertical" />
+          <div className="ac-editor-center-guide ac-editor-center-guide--horizontal" />
         </div>
 
         {/* Alvo real do Moveable — ver comentário de proxyEl/syncVideoToProxy acima. Invisível
@@ -510,7 +546,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
             verticalGuidelines={[0, frameSize.width / 2, frameSize.width]}
             horizontalGuidelines={[0, frameSize.height / 2, frameSize.height]}
             onDrag={handleDrag}
-            onDragEnd={({ target }: OnDragEnd) => commitFromTarget(selectedLayer.id, target)}
+            onDragStart={clearCenterGuides}
+            onDragEnd={({ target }: OnDragEnd) => { clearCenterGuides(); commitFromTarget(selectedLayer.id, target) }}
             onResizeStart={handleResizeStart}
             onResize={handleResize}
             onResizeEnd={({ target }: OnResizeEnd) => commitFromTarget(selectedLayer.id, target)}
