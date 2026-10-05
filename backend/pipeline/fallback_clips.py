@@ -59,7 +59,7 @@ def _norm(text: str) -> str:
     return "".join(c for c in t if not unicodedata.combining(c))
 
 
-def _sentences(entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _sentences(entries: Sequence[Dict[str, Any]], max_sentence: float = 25.0) -> List[Dict[str, Any]]:
     """Merge subtitle cues into complete sentences."""
     out: List[Dict[str, Any]] = []
     cur: Optional[Dict[str, Any]] = None
@@ -73,7 +73,7 @@ def _sentences(entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             cur["text"] = (cur["text"] + " " + text).strip()
         nxt = entries[i + 1] if i + 1 < len(entries) else None
         gap = (to_seconds(nxt["start_time"]) - en) if nxt else 99
-        if _END_PUNCT.search(text) or gap >= _PAUSE_SEC or (cur["end"] - cur["start"]) > 25:
+        if _END_PUNCT.search(text) or gap >= _PAUSE_SEC or (cur["end"] - cur["start"]) > max_sentence:
             out.append(cur)
             cur = None
     if cur:
@@ -113,11 +113,12 @@ def build_fallback_clips(
 
     category = (category or "default").strip() or "default"
     profile = profile or profile_from_srt(valid)
-    sents = _sentences(valid)
-    total = sents[-1]["end"] - sents[0]["start"]
     tmin, tmax = profile.target_clip_sec
-    target = (tmin + tmax) / 2
+    target = profile.user_target_sec or (tmin + tmax) / 2
     max_len = max(profile.max_clip_sec, target)
+    # frases muito longas (transcrição sem pontuação) estouram a duração escolhida
+    sents = _sentences(valid, max_sentence=max(6.0, min(25.0, target * 0.35)))
+    total = sents[-1]["end"] - sents[0]["start"]
     min_len = min(profile.min_clip_sec, target)
     desired = max(profile.topics_hint[0], round(total / max(target * 1.6, 1)))
     count = max(1, min(profile.max_clips, profile.topics_hint[1], desired))
@@ -131,6 +132,8 @@ def build_fallback_clips(
         while j < len(sents):
             dur = sents[j]["end"] - sents[i]["start"]
             if dur >= target or dur >= max_len or j == len(sents) - 1:
+                break
+            if sents[j + 1]["end"] - sents[i]["start"] > max_len:
                 break
             j += 1
         dur = sents[j]["end"] - sents[i]["start"]
