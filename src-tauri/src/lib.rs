@@ -6,6 +6,7 @@ use tauri::Manager;
 mod backend_manager;
 mod commands;
 mod tray;
+mod updater;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,7 +25,8 @@ pub fn run() {
             quit_app,
             enable_autostart,
             disable_autostart,
-            is_autostart_enabled
+            is_autostart_enabled,
+            updater::download_and_install_update
         ])
         .manage(BackendManager::new())
         .setup(|app| {
