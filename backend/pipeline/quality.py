@@ -434,7 +434,7 @@ def refine_timeline(items: Sequence[Dict[str, Any]], srt_entries: Sequence[Dict[
                     it["_ops"].append("extend")
                     report["extended"] += 1
             dur = it["_e"] - it["_s"]
-            if dur > profile.max_clip_sec:
+            if dur > profile.max_clip_sec and not profile.user_target_sec:
                 e, ei = _trim_to_max(it["_s"], it["_ei"], cues, profile.max_clip_sec)
                 if e < it["_e"]:
                     it["_e"], it["_ei"] = e, ei
