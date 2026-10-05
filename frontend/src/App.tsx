@@ -7,6 +7,7 @@ import ClipEditorPage from './pages/ClipEditorPage'
 import SettingsPage from './pages/SettingsPage'
 import LandingPage from './pages/LandingPage'
 import Header from './components/Header'
+import UpdateBanner from './components/UpdateBanner'
 import { trackPageview } from './analytics/posthog'
 import { isTauri } from './utils/isTauri'
 import { hasEnteredApp } from './utils/webEntry'
@@ -38,6 +39,7 @@ function App() {
 
   return (
     <Layout>
+      <UpdateBanner />
       <Header />
       <Content>
         <Routes>
