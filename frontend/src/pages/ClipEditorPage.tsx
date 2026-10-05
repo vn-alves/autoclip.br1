@@ -867,6 +867,69 @@ const ClipEditorPage: React.FC = () => {
     return () => { alive = false; if (timeoutId) window.clearTimeout(timeoutId) }
   }, [exportJobId, clipId])
 
+  // ===== Desfazer / Refazer =====
+  // Guarda "fotos" do estado do editor (vídeos, legenda, fundo, textos das legendas). Mudanças
+  // seguidas (ex.: arrastar) viram um passo só, gravado 350ms depois que param.
+  type Snap = { state: EditorState; segments: SubtitleSegment[] }
+  const historyRef = useRef<{ past: Snap[]; future: Snap[]; current: Snap | null; restoring: boolean }>({ past: [], future: [], current: null, restoring: false })
+  const [historyTick, setHistoryTick] = useState(0)
+  const snapKey = (st: EditorState, segs: SubtitleSegment[]) =>
+    JSON.stringify({ ...st, selectedLayerId: null, subtitle: { ...st.subtitle, selectedSegmentId: null } }) + '|' + JSON.stringify(segs)
+  useEffect(() => {
+    if (loading) return
+    const h = historyRef.current
+    if (h.restoring) { h.restoring = false; return }
+    const t = window.setTimeout(() => {
+      const next = { state: editorState, segments: subtitleSegments }
+      if (!h.current) { h.current = next; return }
+      if (snapKey(h.current.state, h.current.segments) === snapKey(next.state, next.segments)) return
+      h.past.push(h.current)
+      if (h.past.length > 100) h.past.shift()
+      h.future = []
+      h.current = next
+      setHistoryTick((n) => n + 1)
+    }, 350)
+    return () => window.clearTimeout(t)
+  }, [editorState, subtitleSegments, loading])
+  const applySnap = (snap: Snap) => {
+    historyRef.current.restoring = true
+    historyRef.current.current = snap
+    setEditorState({ ...snap.state, selectedLayerId: editorState.selectedLayerId })
+    setSubtitleSegments(snap.segments)
+    setSaveState('idle')
+    setHistoryTick((n) => n + 1)
+  }
+  const undo = () => {
+    const h = historyRef.current
+    const prev = h.past.pop()
+    if (!prev || !h.current) return
+    h.future.push(h.current)
+    applySnap(prev)
+  }
+  const redo = () => {
+    const h = historyRef.current
+    const next = h.future.pop()
+    if (!next || !h.current) return
+    h.past.push(h.current)
+    applySnap(next)
+  }
+  const undoRef = useRef(undo); undoRef.current = undo
+  const redoRef = useRef(redo); redoRef.current = redo
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' && e.key.toLowerCase() !== 'y') return
+      e.preventDefault()
+      if (e.key.toLowerCase() === 'y' || e.shiftKey) redoRef.current(); else undoRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  void historyTick
+  const canUndo = historyRef.current.past.length > 0
+  const canRedo = historyRef.current.future.length > 0
+
   if (loading) {
     return (
       <div className="ac-editor-page" style={{ alignItems: 'center', justifyContent: 'center' }}>
@@ -898,6 +961,8 @@ const ClipEditorPage: React.FC = () => {
           <h1>{clip.title || 'Editar corte'}</h1>
         </div>
         <div className="ac-editor-header-actions">
+          <Btn variant="text" onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)">↶ Desfazer</Btn>
+          <Btn variant="text" onClick={redo} disabled={!canRedo} title="Refazer (Ctrl+Shift+Z)">Refazer ↷</Btn>
           {hasUnuploadedLayers(editorState.layers) && (
             <span className="ac-editor-save-error">Há vídeo(s) ainda não enviado(s) — será enviado ao salvar/exportar.</span>
           )}
