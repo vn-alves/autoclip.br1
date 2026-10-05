@@ -7,6 +7,10 @@
  * - "projects": registros de projeto (mesma forma de useProjectStore.Project).
  * - "clips": cortes gerados (mesma forma de useProjectStore.Clip), indexado por project_id.
  * - "blobs": arquivos de vídeo em si (o File/Blob bruto), chave = projectId ou clipId.
+ * - "subtitles": legenda de um corte (SubtitleSegment[], ver services/api.ts), chave = clipId —
+ *   usado pelo Editor na Web (ver webstore/editor.ts).
+ * - "editorConfigs": config do Editor (EditConfig, mesma forma salva no backend pelo app
+ *   desktop), chave = clipId.
  *
  * Vídeo em blob dentro do IndexedDB (em vez de OPFS) é intencional aqui: suporte mais
  * amplo entre navegadores e não precisa de flag/permissão extra. Se algum dia os vídeos
@@ -14,12 +18,14 @@
  * por OPFS (Origin Private File System).
  */
 const DB_NAME = 'autoclip-web'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 export const STORES = {
   projects: 'projects',
   clips: 'clips',
   blobs: 'blobs',
+  subtitles: 'subtitles',
+  editorConfigs: 'editorConfigs',
 } as const
 
 let dbPromise: Promise<IDBDatabase> | null = null
@@ -39,6 +45,12 @@ export function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORES.blobs)) {
         db.createObjectStore(STORES.blobs, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(STORES.subtitles)) {
+        db.createObjectStore(STORES.subtitles, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(STORES.editorConfigs)) {
+        db.createObjectStore(STORES.editorConfigs, { keyPath: 'id' })
       }
     }
     req.onsuccess = () => resolve(req.result)

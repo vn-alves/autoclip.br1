@@ -314,18 +314,19 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     scheduleHandleClamp()
   }
 
-  // Dois comportamentos de resize, escolhidos pelo fitMode da layer selecionada (item pedido:
-  // "Normal" continua exatamente como estava; "Preencher proporcionalmente" nunca estica):
+  // Dois comportamentos de resize, escolhidos pelo fitMode da layer selecionada:
   //
-  // fitMode 'contain' (Normal): só os handles de CANTO preservam proporção (ancorado no canto
-  // OPOSTO); os de BORDA (n/s/e/w) esticam livremente — comportamento antigo, intacto.
+  // fitMode 'contain' (Normal): TODA alça (canto OU borda) dá zoom proporcional — nunca
+  // deforma. Qualquer alça escala os dois eixos juntos, acompanhando continuamente o quanto o
+  // usuário arrasta (não é um zoom fixo/preset) — o eixo que a alça não controla diretamente
+  // (borda, não canto) é derivado via a proporção do vídeo, ancorado no CENTRO da caixa nesse
+  // eixo (não tem uma borda natural pra ancorar ali).
   //
   // fitMode 'cover': TODOS os handles redimensionam livremente (largura e altura
-  // independentes, como as bordas do modo Normal) — quem impede a deformação do CONTEÚDO não
-  // é travar o formato da caixa, é o object-fit:cover no <video> (ver JSX). É exatamente o
-  // padrão do vídeo de referência: só a altura muda ao arrastar os handles de cima/baixo, a
-  // largura fica onde estava, e o vídeo nunca parece "esticar" porque quem está sempre
-  // recortando/cobrindo a caixa é o navegador, não uma trava de proporção no drag.
+  // independentes) — quem impede a deformação do CONTEÚDO não é travar o formato da caixa, é
+  // o object-fit:cover no <video> (ver JSX). Só a altura muda ao arrastar os handles de cima/
+  // baixo, a largura fica onde estava, e o vídeo nunca parece "esticar" porque quem está
+  // sempre recortando/cobrindo a caixa é o navegador, não uma trava de proporção no drag.
   const resizeStartRef = useRef({ left: 0, top: 0, width: 0, height: 0, ratio: 1 })
 
   const handleResizeStart = ({ target }: OnResizeStart) => {
@@ -337,24 +338,28 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     resizeStartRef.current = { left, top, width, height, ratio: height > 0 ? width / height : 1 }
   }
 
-  const handleResize = ({ target, width, height, drag, direction }: OnResize) => {
+  const handleResize = ({ target, width, height, direction }: OnResize) => {
     const [dx, dy] = direction
-    const isCorner = dx !== 0 && dy !== 0
     const s = resizeStartRef.current
-    let newLeft = drag.left
-    let newTop = drag.top
+    let newWidth = width
+    let newHeight = height
 
-    if (selectedLayer?.fitMode !== 'cover' && isCorner) {
-      height = width / s.ratio
-      // dx/dy === 1 -> a borda direita/inferior é a que está sendo arrastada, então a
-      // esquerda/topo fica ancorada (e vice-versa) — mesma convenção de direção do Moveable.
-      const anchorX = dx === 1 ? s.left : s.left + s.width
-      const anchorY = dy === 1 ? s.top : s.top + s.height
-      newLeft = dx === 1 ? anchorX : anchorX - width
-      newTop = dy === 1 ? anchorY : anchorY - height
+    if (selectedLayer?.fitMode !== 'cover') {
+      const ratio = s.ratio
+      if (dx !== 0) newHeight = newWidth / ratio
+      else newWidth = newHeight * ratio
     }
-    target.style.width = `${width}px`
-    target.style.height = `${height}px`
+    // dx/dy === 1 -> a borda direita/inferior é a que está sendo arrastada, então a
+    // esquerda/topo fica ancorada (e vice-versa) — mesma convenção de direção do Moveable.
+    // dx/dy === 0 (alça de borda, eixo derivado/não tocado) -> ancora no CENTRO da caixa
+    // nesse eixo (não tem uma borda natural pra ancorar ali).
+    const anchorX = dx === 1 ? s.left : (dx === -1 ? s.left + s.width : s.left + s.width / 2)
+    const anchorY = dy === 1 ? s.top : (dy === -1 ? s.top + s.height : s.top + s.height / 2)
+    const newLeft = dx === 1 ? anchorX : (dx === -1 ? anchorX - newWidth : anchorX - newWidth / 2)
+    const newTop = dy === 1 ? anchorY : (dy === -1 ? anchorY - newHeight : anchorY - newHeight / 2)
+
+    target.style.width = `${newWidth}px`
+    target.style.height = `${newHeight}px`
     target.style.left = `${newLeft}px`
     target.style.top = `${newTop}px`
     syncVideoToProxy(target as HTMLElement)
@@ -374,20 +379,24 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
         style={{ width: frameSize.width, height: frameSize.height }}
         onMouseDown={(e) => { if (e.target === frameRef.current) { onSelectLayer(null); setSubtitleSelected(false) } }}
       >
-        {/* Fundo */}
-        {background.type === 'color' ? (
-          <div className="ac-editor-bg" style={{ background: background.color }} />
-        ) : (
-          <div className="ac-editor-bg ac-editor-bg--blur">
-            <video
-              ref={bgVideoRef}
-              src={mainLayer?.source}
-              muted
-              playsInline
-              style={{ filter: `blur(${background.blurAmount}px)`, transform: 'scale(1.18)' }}
-            />
-          </div>
-        )}
+        {/* Recorta só o vídeo/fundo — ver .ac-editor-clip no CSS (as alças do Moveable ficam
+            fora daqui, direto no .ac-editor-frame, pra nunca ficarem escondidas quando o zoom
+            deixa a caixa maior que a tela). */}
+        <div className="ac-editor-clip">
+          {/* Fundo */}
+          {background.type === 'color' ? (
+            <div className="ac-editor-bg" style={{ background: background.color }} />
+          ) : (
+            <div className="ac-editor-bg ac-editor-bg--blur">
+              <video
+                ref={bgVideoRef}
+                src={mainLayer?.source}
+                muted
+                playsInline
+                style={{ filter: `blur(${background.blurAmount}px)`, transform: 'scale(1.18)' }}
+              />
+            </div>
+          )}
 
         {orderedLayers.map((layer) => {
           const isActive = activeIds.has(layer.id)
@@ -462,6 +471,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
             />
           )
         })}
+        </div>
 
         {/* Alvo real do Moveable — ver comentário de proxyEl/syncVideoToProxy acima. Invisível
             e sem pointer-events próprio: quem desenha a caixa/alças visíveis e captura o
@@ -490,11 +500,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
             snappable
             snapCenter
             snapThreshold={6}
-            // 8 handles (cantos + centros de cada borda). Cantos preservam o aspect ratio do
-            // vídeo (zoom); bordas (n/s/e/w) esticam livremente — ver handleResize. O Canvas
-            // tem overflow:hidden (ac.editor-frame), então ampliar o vídeo além do frame e
-            // arrastar funciona como janela de recorte, sem precisar de uma segunda lógica de
-            // transformação. Vale pra qualquer layer selecionada.
+            // 8 handles (cantos + centros de cada borda). No modo Normal, TODAS preservam o
+            // aspect ratio do vídeo (zoom); no Preencher proporcionalmente, todas redimensionam
+            // livremente — ver handleResize. O Canvas tem overflow:hidden (ac.editor-frame),
+            // então ampliar o vídeo além do frame e arrastar funciona como janela de recorte,
+            // sem precisar de uma segunda lógica de transformação. Vale pra qualquer layer
+            // selecionada.
             renderDirections={['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']}
             verticalGuidelines={[0, frameSize.width / 2, frameSize.width]}
             horizontalGuidelines={[0, frameSize.height / 2, frameSize.height]}

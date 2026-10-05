@@ -73,6 +73,18 @@ const BilibiliDownload: React.FC<BilibiliDownloadProps> = ({ onDownloadSuccess }
     }
   }, [pollingInterval])
 
+  // Bug real: a análise do link (busca título/thumbnail) só disparava no onBlur — colar o link
+  // e não clicar fora do campo deixava a "importação" (como o usuário vê) parada até isso
+  // acontecer. Agora dispara sozinho, um pouco depois de parar de digitar/colar (debounce: evita
+  // disparar no meio da digitação manual, antes do link ficar completo, e evita bater a API a
+  // cada tecla). `parseVideoInfo` lê `url`/`videoInfo` do estado atual via closure — por isso
+  // não entra nas dependências (seria recriada a cada render, cancelando o debounce sempre).
+  useEffect(() => {
+    if (!url.trim() || videoInfo || !getVideoType(url.trim())) return
+    const timer = window.setTimeout(() => { parseVideoInfo() }, 500)
+    return () => window.clearTimeout(timer)
+  }, [url, videoInfo])
+
   // Aceita as variações comuns de link (m., shorts, live, /video/, encurtados).
   const BILIBILI_PATTERNS = [
     /^https?:\/\/((www|m)\.)?bilibili\.com\/video\/[Bb][Vv][0-9A-Za-z]+/,

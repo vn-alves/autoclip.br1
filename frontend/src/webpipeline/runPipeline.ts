@@ -1,7 +1,10 @@
 import { Clip } from '../store/useProjectStore'
+import { SubtitleSegment } from '../services/api'
+import { splitPlainTextToWords } from '../components/editor/types'
 import { getWebProjectBlob, updateWebProject, addWebClip } from '../webstore/projects'
+import { saveWebClipSubtitles } from '../webstore/editor'
 import { extractAudio, cutClip } from './ffmpegClient'
-import { transcribeAudio, extractHighlightClips, WebPipelineError } from './llmClient'
+import { transcribeAudio, extractHighlightClips, WebPipelineError, TranscriptSegment } from './llmClient'
 
 export { WebPipelineError }
 
@@ -22,6 +25,29 @@ function secToTimecode(sec: number): string {
   const s = Math.floor(sec % 60)
   const ms = Math.round((sec - Math.floor(sec)) * 1000)
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`
+}
+
+/** Recorta a transcrição do vídeo INTEIRO pra só os segmentos do corte [clipStart, clipEnd),
+ * com o tempo relativizado ao início do corte, e quebra cada um em palavras (estimativa linear
+ * de tempo, mesma técnica de backend/utils/subtitle_processor.py — a API só devolve timestamp
+ * por SEGMENTO, não por palavra, ver transcribeAudio). Sem isso a legenda do corte simplesmente
+ * não existia no modo Web (a transcrição era usada só pra escolher os cortes, depois
+ * descartada) — agora alimenta o Editor (ver webstore/editor.ts) e a exportação com legenda
+ * queimada (ver ffmpegClient.exportWebClip). */
+function buildClipSubtitles(segments: TranscriptSegment[], clipStart: number, clipEnd: number): SubtitleSegment[] {
+  const overlapping = segments.filter((s) => s.end > clipStart && s.start < clipEnd)
+  return overlapping.map((s, i) => {
+    const startTime = Math.max(0, s.start - clipStart)
+    const endTime = Math.max(startTime + 0.01, Math.min(clipEnd - clipStart, s.end - clipStart))
+    return {
+      id: `web-sub-${i}`,
+      index: i,
+      startTime,
+      endTime,
+      text: s.text,
+      words: splitPlainTextToWords(s.text, startTime, endTime),
+    }
+  })
 }
 
 /**
@@ -73,6 +99,7 @@ export async function runWebPipeline(
         content: [h.title],
       }
       const saved = await addWebClip(projectId, clip, clipBlob)
+      await saveWebClipSubtitles(saved.id, buildClipSubtitles(segments, h.start, h.end))
       clips.push(saved)
     }
 

@@ -31,6 +31,10 @@ interface SubtitleControlsProps {
   syncError: string | null
   syncedAt: string | null
   onStartSync: () => void
+  /** false na "versão básica" do Editor sem servidor (ver ClipEditorPage) — sincronização por
+   * IA ainda não existe lá (precisaria de outra chamada de transcrição client-side). Default
+   * true (app desktop sempre suporta). */
+  syncSupported?: boolean
   wordsPerCaption: SubtitleWordsPerCaption
   onWordsPerCaptionChange: (value: SubtitleWordsPerCaption) => void
 }
@@ -94,7 +98,7 @@ const SubtitleControls: React.FC<SubtitleControlsProps> = ({
   loading, error, available, hasSegments, style, position,
   onApplyPreset, onStyleChange, onOutlineChange, onPositionPreset,
   transition, onTransitionChange, wordHighlight, onWordHighlightChange,
-  syncStatus, syncMessage, syncError, syncedAt, onStartSync,
+  syncStatus, syncMessage, syncError, syncedAt, onStartSync, syncSupported = true,
   wordsPerCaption, onWordsPerCaptionChange,
 }) => {
   if (loading) {
@@ -132,7 +136,11 @@ const SubtitleControls: React.FC<SubtitleControlsProps> = ({
     <>
       <div className="ac-editor-panel-section">
         <div className="ac-editor-panel-label">Sincronização</div>
-        {syncStatus === 'syncing' ? (
+        {!syncSupported ? (
+          <p className="ac-editor-hint" style={{ marginTop: 0 }}>
+            Indisponível na versão Web por enquanto — a legenda usa o tempo estimado por palavra.
+          </p>
+        ) : syncStatus === 'syncing' ? (
           <Btn size="sm" loading disabled>{syncMessage || 'Sincronizando…'}</Btn>
         ) : syncStatus === 'synced' ? (
           <>

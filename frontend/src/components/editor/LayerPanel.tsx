@@ -22,6 +22,10 @@ interface LayerPanelProps {
   subtitleAvailable: boolean
   subtitleVisible: boolean
   onToggleSubtitleVisible: () => void
+  /** false na "versão básica" do Editor sem servidor (ver ClipEditorPage) — camadas
+   * secundárias exigiriam upload+composição multi-camada via ffmpeg.wasm, fora do escopo
+   * desta primeira versão. Default true (app desktop sempre suporta). */
+  allowSecondaryLayers?: boolean
 }
 
 // Rótulos em português (o valor interno continua 'contain'/'cover', só o texto muda) —
@@ -49,6 +53,7 @@ const LayerPanel: React.FC<LayerPanelProps> = ({
   onSelect, onToggleVisible, onRename, onMoveUp, onMoveDown, onRemove, onTimeRangeChange, onAddFiles,
   onSetFitMode, uploadError,
   subtitleAvailable, subtitleVisible, onToggleSubtitleVisible,
+  allowSecondaryLayers = true,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -180,22 +185,30 @@ const LayerPanel: React.FC<LayerPanelProps> = ({
         })}
       </div>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept={ACCEPTED_VIDEO_TYPES}
-        multiple
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          if (e.target.files && e.target.files.length > 0) onAddFiles(e.target.files)
-          e.target.value = ''
-        }}
-      />
-      <Btn size="sm" onClick={() => fileInputRef.current?.click()} style={{ marginTop: 10, width: '100%' }}>
-        <Icon.Plus size={13} /> Adicionar vídeo
-      </Btn>
-      {uploadError && (
-        <p style={{ color: 'var(--ac-error)', fontSize: 12, marginTop: 8 }}>{uploadError}</p>
+      {allowSecondaryLayers ? (
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_VIDEO_TYPES}
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) onAddFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <Btn size="sm" onClick={() => fileInputRef.current?.click()} style={{ marginTop: 10, width: '100%' }}>
+            <Icon.Plus size={13} /> Adicionar vídeo
+          </Btn>
+          {uploadError && (
+            <p style={{ color: 'var(--ac-error)', fontSize: 12, marginTop: 8 }}>{uploadError}</p>
+          )}
+        </>
+      ) : (
+        <p className="ac-editor-hint" style={{ marginTop: 10 }}>
+          Camadas de vídeo extras ainda não estão disponíveis na versão Web.
+        </p>
       )}
     </div>
   )

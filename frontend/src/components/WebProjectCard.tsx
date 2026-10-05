@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { message } from 'antd'
 import { Project, Clip } from '../store/useProjectStore'
 import { Btn, Icon, StatusDot, ProgressLine, fmtClock, fmtDuration, parseTimecode } from '../ui'
@@ -27,6 +28,7 @@ const stageLabel = (stage: PipelineStage | null): string => {
  * à API real). O corte por IA aqui roda inteiro no navegador (ver webpipeline/).
  */
 const WebProjectCard: React.FC<WebProjectCardProps> = ({ project, onChanged }) => {
+  const navigate = useNavigate()
   const [running, setRunning] = useState(false)
   const [stage, setStage] = useState<PipelineStage | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -125,6 +127,9 @@ const WebProjectCard: React.FC<WebProjectCardProps> = ({ project, onChanged }) =
                     <small>{fmtClock(clip.start_time)} – {fmtClock(clip.end_time)} · {fmtDuration(dur)}</small>
                   </div>
                   <div className="ac-row-control">
+                    <Btn size="sm" variant="text" onClick={() => navigate(`/project/${project.id}/editor/${clip.id}`)}>
+                      Editar
+                    </Btn>
                     <Btn size="sm" onClick={() => handleDownloadClip(clip)}>Baixar</Btn>
                   </div>
                 </div>

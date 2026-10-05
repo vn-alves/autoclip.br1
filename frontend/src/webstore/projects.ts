@@ -30,6 +30,12 @@ export async function listWebClips(projectId: string): Promise<Clip[]> {
   return dbGetAllByIndex<Clip>(STORES.clips, 'project_id', projectId)
 }
 
+/** Um corte específico por id — usado pelo Editor na Web (ClipEditorPage), que só conhece o
+ * clipId da rota, não o projectId necessariamente em mãos no mesmo momento. */
+export async function getWebClip(id: string): Promise<Clip | undefined> {
+  return dbGet<Clip>(STORES.clips, id)
+}
+
 /**
  * Cria um projeto a partir de um arquivo de vídeo local — item central da Fase 1 (upload
  * sem link, ver decisão da conversa: Web não baixa de URL, só arquivo do computador).

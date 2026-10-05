@@ -2,19 +2,22 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Spin } from 'antd'
 import { projectApi, ClipDetail, SubtitleSegment, SubtitleWord, SubtitleSyncStatus } from '../services/api'
-import { Btn, Icon, Segmented } from '../ui'
+import { Btn, Icon, Segmented, parseTimecode } from '../ui'
 import EditorCanvas from '../components/editor/EditorCanvas'
 import EditorTimeline from '../components/editor/EditorTimeline'
 import SubtitleControls from '../components/editor/SubtitleControls'
 import LayerPanel from '../components/editor/LayerPanel'
 import LayersTimeline from '../components/editor/LayersTimeline'
 import {
-  BackgroundType, CanvasFormat, EditorState, NormalizedTransform,
+  BackgroundType, CanvasFormat, EditorState, NormalizedTransform, CANVAS_DIMENSIONS,
   SubtitlePosition, SubtitlePositionPreset, SubtitleStyle, SubtitleStylePreset, SubtitleWordsPerCaption,
   SubtitleTransition, WordHighlight,
   createDefaultEditorState, createVideoLayerFromFile, fitTransform, resizeTransformForFormat, SUBTITLE_POSITION_PRESETS,
   groupWordsIntoSegments, splitPlainTextToWords, toEditConfig, applyEditConfig, hasUnuploadedLayers, isDegenerateTransform,
 } from '../components/editor/types'
+import { getWebClip, getWebVideoUrl, getWebProjectBlob } from '../webstore/projects'
+import { getWebClipSubtitles, saveWebClipSubtitles, getWebEditorConfig, saveWebEditorConfig } from '../webstore/editor'
+import { exportWebClip } from '../webpipeline/ffmpegClient'
 import './ClipEditorPage.css'
 
 const FORMAT_OPTIONS: { value: CanvasFormat; label: string }[] = [
@@ -73,11 +76,23 @@ const ClipEditorPage: React.FC = () => {
   // demais layers só seguem esse tempo, nunca têm player próprio (item 15).
   const mainVideoRef = useRef<HTMLVideoElement>(null)
 
+  // Corte da versão Web (sem servidor, ver webstore/) — identificado pelo próprio formato do
+  // id (sempre "web-<timestamp>-<n>", ver webstore/projects.ts::newId), sem precisar de uma
+  // checagem assíncrona de "existe backend" a cada chamada. "Versão básica" (ver conversa):
+  // vídeo único (sem camadas secundárias) e sem sincronização de legenda com IA — o resto
+  // (posição/recorte, editar/remover legenda, exportar com legenda queimada) funciona 100%
+  // local via IndexedDB + ffmpeg.wasm.
+  const isWebClip = !!clipId?.startsWith('web-')
+
   const [clip, setClip] = useState<ClipDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  const mainVideoUrl = projectId && clipId ? projectApi.getClipVideoUrl(projectId, clipId) : ''
+  // URL do vídeo principal — string síncrona no modo backend (projectApi.getClipVideoUrl só
+  // monta a URL, não busca nada), mas precisa ser assíncrona no modo Web (getWebVideoUrl lê o
+  // Blob do IndexedDB e cria um object URL) — por isso vira estado em vez de uma const direta,
+  // com o efeito logo abaixo resolvendo os dois casos.
+  const [mainVideoUrl, setMainVideoUrl] = useState('')
   const [editorState, setEditorState] = useState<EditorState>(() => createDefaultEditorState(mainVideoUrl))
   // Aspect ratio real de cada layer (só disponível depois do onLoadedMetadata) e quais delas já
   // tiveram o enquadramento ajustado manualmente pelo usuário — trocar o formato do Canvas só
@@ -95,6 +110,10 @@ const ClipEditorPage: React.FC = () => {
   // página for recarregada antes de salvar, a layer perde o arquivo e precisa ser re-adicionada
   // (o object URL sozinho não é suficiente para o backend renderizar).
   const pendingFilesRef = useRef<Record<string, File>>({})
+  // Vídeo exportado no modo Web (ffmpeg.wasm, ver exportWebClip) — guardado aqui pra
+  // handleDownloadExport baixar sem precisar refazer o export; não existe job/backend pra
+  // buscar de novo depois (ao contrário do modo backend, que baixa via exportJobId).
+  const webExportBlobRef = useRef<Blob | null>(null)
 
   // Persistência real da edição (Stage 4) — separada do rascunho "palavras por legenda" em
   // localStorage (que continua existindo só como fallback antes da primeira config salva).
@@ -131,11 +150,53 @@ const ClipEditorPage: React.FC = () => {
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
 
+  // Resolve a URL do vídeo principal — backend: síncrono (só monta a URL); Web: assíncrono
+  // (lê o Blob do IndexedDB, ver getWebVideoUrl). O efeito seguinte propaga pra dentro da
+  // layer principal assim que resolver (necessário no modo Web: na primeira montagem, antes
+  // desse efeito rodar, createDefaultEditorState já criou a layer com source vazio).
+  useEffect(() => {
+    if (!projectId || !clipId) return
+    let alive = true
+    if (isWebClip) {
+      getWebVideoUrl(clipId).then((url) => { if (alive && url) setMainVideoUrl(url) })
+    } else {
+      setMainVideoUrl(projectApi.getClipVideoUrl(projectId, clipId))
+    }
+    return () => { alive = false }
+  }, [projectId, clipId, isWebClip])
+
+  useEffect(() => {
+    if (!mainVideoUrl) return
+    setEditorState((s) => ({
+      ...s,
+      layers: s.layers.map((l) => (l.isMain && l.source !== mainVideoUrl ? { ...l, source: mainVideoUrl } : l)),
+    }))
+  }, [mainVideoUrl])
+
   useEffect(() => {
     if (!clipId) return
     let alive = true
     setLoading(true)
     setLoadError(null)
+    if (isWebClip) {
+      getWebClip(clipId)
+        .then((c) => {
+          if (!alive) return
+          if (!c) { setLoadError('Corte não encontrado'); return }
+          const start = parseTimecode(c.start_time)
+          const end = parseTimecode(c.end_time)
+          const dur = Math.max(0, end - start)
+          const now = new Date().toISOString()
+          setClip({
+            id: c.id, project_id: projectId || '', title: c.generated_title || c.title || 'Corte sem título',
+            duration: dur, status: 'completed', created_at: now, updated_at: now,
+          })
+          setDuration(dur)
+        })
+        .catch(() => { if (alive) setLoadError('Não foi possível carregar o corte') })
+        .finally(() => { if (alive) setLoading(false) })
+      return () => { alive = false }
+    }
     projectApi.getClipDetail(clipId)
       .then((c) => { if (alive) { setClip(c); setDuration(c.duration || 0) } })
       .catch((err: any) => {
@@ -143,7 +204,7 @@ const ClipEditorPage: React.FC = () => {
       })
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
-  }, [clipId])
+  }, [clipId, isWebClip, projectId])
 
   // Legendas: busca separada da do clip — uma falha aqui nunca deve travar o resto do editor.
   useEffect(() => {
@@ -152,6 +213,20 @@ const ClipEditorPage: React.FC = () => {
     setSubtitleLoading(true)
     setSubtitleError(null)
     setSubtitleAvailable(true)
+    if (isWebClip) {
+      getWebClipSubtitles(clipId)
+        .then((segments) => {
+          if (!alive) return
+          if (!segments || segments.length === 0) { setSubtitleAvailable(false); return }
+          setSubtitleSegments(segments)
+          setSubtitleWords([])
+          setSyncStatus('not_synced')
+          setSyncedAt(null)
+        })
+        .catch(() => { if (alive) setSubtitleError('Não foi possível carregar as legendas') })
+        .finally(() => { if (alive) setSubtitleLoading(false) })
+      return () => { alive = false }
+    }
     projectApi.getClipSubtitles(projectId, clipId)
       .then((data) => {
         if (!alive) return
@@ -170,7 +245,7 @@ const ClipEditorPage: React.FC = () => {
       })
       .finally(() => { if (alive) setSubtitleLoading(false) })
     return () => { alive = false }
-  }, [projectId, clipId])
+  }, [projectId, clipId, isWebClip])
 
   // Carrega a preferência de "palavras por legenda" salva pra este corte (se houver),
   // sempre que o clip muda — cobre tanto a primeira montagem quanto trocar de corte sem sair
@@ -189,37 +264,43 @@ const ClipEditorPage: React.FC = () => {
   // da sessão de upload original não sobrevive a um reload). `customized` de cada layer vem do
   // que foi de fato persistido (applyEditConfig) — NÃO forçamos mais todo mundo pra `true` aqui
   // (isso travava pra sempre o enquadramento salvo, ignorando fitMode/cover daí em diante).
+  const applyLoadedConfig = (editConfig: any) => {
+    if (!clipId) return
+    const restored = applyEditConfig(editConfig, mainVideoUrl, (assetId) => projectApi.getEditorAssetUrl(clipId, assetId))
+    // Bug real: transform salvo antes do sistema fitMode existir podia ficar totalmente fora
+    // do canvas (ex.: vídeo principal invisível em 9:16 até o usuário mexer manualmente no
+    // enquadramento) — customized:true travava esse valor ruim pra sempre, já que só um
+    // toggle manual de fitMode (handleSetFitMode) recalcula sem checar customized. Aqui
+    // saneia qualquer layer com transform degenerado, ignorando customized: nunca é uma
+    // customização real (o usuário via o preview enquanto ajustava), só dado corrompido.
+    const state = {
+      ...restored,
+      layers: restored.layers.map((l) => {
+        if (!isDegenerateTransform(l.transform)) return l
+        const ratio = videoRatiosRef.current[l.id]
+        return ratio
+          ? { ...l, customized: false, transform: fitLayerTransform(restored.canvas.format, ratio, l.isMain, l.fitMode) }
+          : { ...l, customized: false }
+      }),
+    }
+    setEditorState(state)
+    setSaveState('saved')
+  }
+
   useEffect(() => {
     if (!clipId || !mainVideoUrl) return
     let alive = true
+    if (isWebClip) {
+      getWebEditorConfig(clipId).then((config) => { if (alive && config) applyLoadedConfig(config) })
+      return () => { alive = false }
+    }
     projectApi.getClipEditorConfig(clipId)
-      .then(({ edit_config }) => {
-        if (!alive || !edit_config) return
-        const restored = applyEditConfig(edit_config, mainVideoUrl, (assetId) => projectApi.getEditorAssetUrl(clipId, assetId))
-        // Bug real: transform salvo antes do sistema fitMode existir podia ficar totalmente fora
-        // do canvas (ex.: vídeo principal invisível em 9:16 até o usuário mexer manualmente no
-        // enquadramento) — customized:true travava esse valor ruim pra sempre, já que só um
-        // toggle manual de fitMode (handleSetFitMode) recalcula sem checar customized. Aqui
-        // saneia qualquer layer com transform degenerado, ignorando customized: nunca é uma
-        // customização real (o usuário via o preview enquanto ajustava), só dado corrompido.
-        const state = {
-          ...restored,
-          layers: restored.layers.map((l) => {
-            if (!isDegenerateTransform(l.transform)) return l
-            const ratio = videoRatiosRef.current[l.id]
-            return ratio
-              ? { ...l, customized: false, transform: fitLayerTransform(restored.canvas.format, ratio, l.isMain, l.fitMode) }
-              : { ...l, customized: false }
-          }),
-        }
-        setEditorState(state)
-        setSaveState('saved')
-      })
+      .then(({ edit_config }) => { if (alive && edit_config) applyLoadedConfig(edit_config) })
       .catch(() => {
         // Sem edição salva ainda (404/erro) — não é fatal, segue com o estado local padrão.
       })
     return () => { alive = false }
-  }, [clipId, mainVideoUrl])
+  }, [clipId, mainVideoUrl, isWebClip])
 
   // Blocos de legenda exibidos no Editor: reagrupa a lista de palavras — real (pós-sincronização
   // com IA) ou a estimativa linear que já vem pronta do backend quando ainda não sincronizado —
@@ -553,28 +634,38 @@ const ClipEditorPage: React.FC = () => {
   // achatada usada pelo preview/karaokê quando sincronizado — ver flatSubtitleWords) a partir
   // dos segmentos já editados, senão a edição só apareceria na lista deste painel, não no
   // Canvas nem no reagrupamento por "palavras por legenda" em cortes já sincronizados.
-  const updateSubtitleSegmentsAndWords = (updater: (prev: SubtitleSegment[]) => SubtitleSegment[]) => {
+  const updateSubtitleSegmentsAndWords = (updater: (prev: SubtitleSegment[]) => SubtitleSegment[]): SubtitleSegment[] => {
+    let next: SubtitleSegment[] = []
     setSubtitleSegments((prev) => {
-      const next = updater(prev)
+      next = updater(prev)
       setSubtitleWords((prevWords) => (prevWords.length > 0 ? next.flatMap((seg) => seg.words) : prevWords))
       return next
     })
+    return next
   }
 
   const handleEditSubtitleSegmentText = (segmentIndex: number, text: string) => {
     if (!projectId || !clipId) return
-    updateSubtitleSegmentsAndWords((prev) => prev.map((seg) => (
+    const next = updateSubtitleSegmentsAndWords((prev) => prev.map((seg) => (
       seg.index === segmentIndex
         ? { ...seg, text: text.trim(), words: splitPlainTextToWords(text, seg.startTime, seg.endTime) }
         : seg
     )))
+    if (isWebClip) {
+      saveWebClipSubtitles(clipId, next).catch(() => setSubtitleError('Não foi possível salvar a edição da legenda'))
+      return
+    }
     projectApi.saveClipSubtitleTextEdits(projectId, clipId, { segmentEdits: { [String(segmentIndex)]: text } })
       .catch(() => setSubtitleError('Não foi possível salvar a edição da legenda'))
   }
 
   const handleDeleteSubtitleSegment = (segmentIndex: number) => {
     if (!projectId || !clipId) return
-    updateSubtitleSegmentsAndWords((prev) => prev.filter((seg) => seg.index !== segmentIndex))
+    const next = updateSubtitleSegmentsAndWords((prev) => prev.filter((seg) => seg.index !== segmentIndex))
+    if (isWebClip) {
+      saveWebClipSubtitles(clipId, next).catch(() => setSubtitleError('Não foi possível remover a legenda'))
+      return
+    }
     projectApi.saveClipSubtitleTextEdits(projectId, clipId, { deletedSegmentIndexes: [String(segmentIndex)] })
       .catch(() => setSubtitleError('Não foi possível remover a legenda'))
   }
@@ -626,6 +717,13 @@ const ClipEditorPage: React.FC = () => {
     setSaveState('saving')
     setSaveError(null)
     try {
+      if (isWebClip) {
+        // Sem camadas secundárias na "versão básica" (ver conversa) — nunca há upload
+        // pendente pra resolver antes de salvar.
+        await saveWebEditorConfig(clipId, toEditConfig(editorState))
+        setSaveState('saved')
+        return true
+      }
       let state = editorState
       for (const layer of state.layers) {
         if (layer.isMain || layer.assetId) continue
@@ -662,6 +760,46 @@ const ClipEditorPage: React.FC = () => {
       setExportError(saveError || 'Não foi possível salvar a edição antes de exportar')
       return
     }
+    if (isWebClip) {
+      // Exportação 100% local via ffmpeg.wasm (ver webpipeline/ffmpegClient.ts::exportWebClip)
+      // — sem job/polling, só um await direto; reaproveita os mesmos estados exportState/
+      // exportProgress do fluxo de backend pra não duplicar a UI.
+      setExportState('processing')
+      try {
+        const videoBlob = await getWebProjectBlob(clipId)
+        if (!videoBlob) throw new Error('Vídeo do corte não encontrado neste navegador')
+        const mainLayer = editorState.layers.find((l) => l.isMain)
+        if (!mainLayer) throw new Error('Camada principal não encontrada')
+        const dims = CANVAS_DIMENSIONS[editorState.canvas.format]
+        const outline = editorState.subtitle.style.outline
+        const blob = await exportWebClip({
+          videoBlob,
+          canvasWidth: dims.width,
+          canvasHeight: dims.height,
+          durationSec: duration,
+          mainTransform: mainLayer.transform,
+          subtitle: editorState.subtitle.visible ? {
+            visible: true,
+            segments: displaySegments.map((s) => ({ startTime: s.startTime, endTime: s.endTime, text: s.text })),
+            style: {
+              fontSize: editorState.subtitle.style.fontSize,
+              color: editorState.subtitle.style.color,
+              outlineColor: outline.enabled ? outline.color : undefined,
+              outlineWidth: outline.enabled ? outline.width : undefined,
+            },
+            position: editorState.subtitle.position,
+          } : undefined,
+          onProgress: (p) => setExportProgress(Math.round(p * 100)),
+        })
+        webExportBlobRef.current = blob
+        setExportResult({ width: dims.width, height: dims.height, duration_sec: duration })
+        setExportState('completed')
+      } catch (err: any) {
+        setExportState('failed')
+        setExportError(err?.message || 'Não foi possível exportar o vídeo')
+      }
+      return
+    }
     setExportState('queued')
     try {
       const res = await projectApi.startClipEditorRender(clipId)
@@ -673,7 +811,21 @@ const ClipEditorPage: React.FC = () => {
   }
 
   const handleDownloadExport = () => {
-    if (!clipId || !exportJobId) return
+    if (!clipId) return
+    if (isWebClip) {
+      const blob = webExportBlobRef.current
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `corte_editado_${clipId}.mp4`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      return
+    }
+    if (!exportJobId) return
     projectApi.downloadClipEditorRender(clipId, exportJobId).catch((err: any) => {
       setExportError(err?.response?.data?.detail || err?.message || 'Falha ao baixar o vídeo exportado')
     })
@@ -723,11 +875,15 @@ const ClipEditorPage: React.FC = () => {
     )
   }
 
+  // Projeto Web ainda não tem uma página de detalhe própria (ProjectDetailPage é 100%
+  // backend) — "Voltar" leva pra Home em vez de um link morto.
+  const backHref = isWebClip ? '/' : (projectId ? `/project/${projectId}` : '/')
+
   if (loadError || !clip || !projectId || !clipId) {
     return (
       <div className="ac-editor-page" style={{ alignItems: 'center', justifyContent: 'center', gap: 16 }}>
         <p style={{ color: 'var(--ac-sub)', fontSize: 14 }}>{loadError || 'Corte não encontrado'}</p>
-        <Btn onClick={() => navigate(projectId ? `/project/${projectId}` : '/')}>Voltar</Btn>
+        <Btn onClick={() => navigate(backHref)}>Voltar</Btn>
       </div>
     )
   }
@@ -736,7 +892,7 @@ const ClipEditorPage: React.FC = () => {
     <div className="ac-editor-page">
       <header className="ac-editor-header">
         <div className="ac-editor-header-title">
-          <Btn variant="text" onClick={() => navigate(`/project/${projectId}`)}>
+          <Btn variant="text" onClick={() => navigate(backHref)}>
             <Icon.Back size={13} /> Voltar
           </Btn>
           <h1>{clip.title || 'Editar corte'}</h1>
@@ -816,6 +972,7 @@ const ClipEditorPage: React.FC = () => {
             syncError={syncError}
             syncedAt={syncedAt}
             onStartSync={handleStartSync}
+            syncSupported={!isWebClip}
             wordsPerCaption={editorState.subtitle.wordsPerCaption}
             onWordsPerCaptionChange={handleWordsPerCaptionChange}
           />
@@ -895,6 +1052,7 @@ const ClipEditorPage: React.FC = () => {
             subtitleAvailable={displaySegments.length > 0}
             subtitleVisible={editorState.subtitle.visible}
             onToggleSubtitleVisible={handleToggleSubtitleVisible}
+            allowSecondaryLayers={!isWebClip}
           />
         </aside>
       </div>
