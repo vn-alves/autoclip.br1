@@ -36,8 +36,11 @@ function autoclipBackend(): Plugin {
       const port = Number(process.env.BACKEND_PORT || 8000)
       if (await pingBackend(port)) return
 
-      const venvPython = path.join(ROOT, '.venv', 'bin', 'python')
-      const python = existsSync(venvPython) ? venvPython : 'python3'
+      const isWindows = process.platform === 'win32'
+      const venvPython = isWindows 
+        ? path.join(ROOT, '.venv', 'Scripts', 'python.exe') 
+        : path.join(ROOT, '.venv', 'bin', 'python')
+      const python = existsSync(venvPython) ? venvPython : (isWindows ? 'python' : 'python3')
       const logDir = path.join(ROOT, 'data', 'logs')
       mkdirSync(logDir, { recursive: true })
       const log = openSync(path.join(logDir, 'backend.stdout.log'), 'a')
