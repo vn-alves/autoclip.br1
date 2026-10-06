@@ -1,3 +1,4 @@
+import os
 """
 视频处理工具
 """
@@ -185,7 +186,11 @@ class VideoProcessor:
                 '-ss', ffmpeg_start_time,  # 在输入前定位，更精确
                 '-i', str(input_video),
                 '-t', str(duration),  # 使用持续时间而不是绝对结束时间
-                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                # Mapeia explicitamente o 1º vídeo e o 1º áudio (se houver) — sem isso,
+                # arquivos com várias trilhas podiam sair com a trilha errada/muda.
+                '-map', '0:v:0', '-map', '0:a:0?',
+                '-c:v', 'libx264', '-preset', os.getenv('AUTOCLIP_CLIP_PRESET', 'superfast'), '-crf', '22',
+                '-threads', '0',
                 '-c:a', 'aac', '-b:a', '192k',
                 '-avoid_negative_ts', 'make_zero',
                 '-y',  # 覆盖输出文件
