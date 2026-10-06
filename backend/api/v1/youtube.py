@@ -33,6 +33,29 @@ download_tasks = {}
 DEFAULT_SUBTITLE_LANGS = ['pt', 'pt-BR']
 
 
+
+def _final_videos(download_dir):
+    """Só arquivos .mp4 finais (com áudio). Ignora fragmentos do yt-dlp tipo 'x.f137.mp4'
+    (stream só de vídeo antes do merge) — pegá-los gerava cortes sem som."""
+    import re as _re, subprocess as _sp
+    from ...utils.ffmpeg_utils import get_ffprobe_path
+    out = []
+    for f in download_dir.glob("*.mp4"):
+        if _re.search(r"\.f\d+\.mp4$", f.name) or f.name.endswith(".part"):
+            continue
+        try:
+            r = _sp.run([get_ffprobe_path(), '-v', 'error', '-select_streams', 'a',
+                         '-show_entries', 'stream=index', '-of', 'csv=p=0', str(f)],
+                        capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and not r.stdout.strip():
+                logger.warning(f"Vídeo baixado sem áudio, descartando: {f.name}")
+                f.unlink(missing_ok=True)
+                continue
+        except Exception:
+            pass
+        out.append(f)
+    return out
+
 def get_subtitle_langs() -> list:
     raw = os.getenv('AUTOCLIP_YT_SUBTITLE_LANGS', '')
     langs = [lang.strip() for lang in raw.split(',') if lang.strip()]
@@ -660,14 +683,15 @@ async def process_youtube_download_task(task_id: str, request: YouTubeDownloadRe
         await update_project_download_progress(project_id, 30.0, "正在下载视频...")
         
         # 设置下载选项
+        _MAXH = int(os.getenv('AUTOCLIP_MAX_VIDEO_HEIGHT', '720') or 720)
         ydl_opts = {
             # Não fixar o áudio em [ext=m4a]: o YouTube responde 403 para o áudio m4a direto
             # (exige token de origem), enquanto o opus/webm baixa normalmente. Sem teto de
             # altura o seletor antigo pegava AV1 2160p, pesado demais para baixar e cortar.
             'format': (
-                'bestvideo[height<=1080][vcodec^=avc1]+bestaudio'
-                '/bestvideo[height<=1080]+bestaudio'
-                '/best[height<=1080]/best'
+                f'bestvideo[height<={_MAXH}][vcodec^=avc1]+bestaudio'
+                f'/bestvideo[height<={_MAXH}]+bestaudio'
+                f'/best[height<={_MAXH}][acodec!=none]/best'
             ),
             'merge_output_format': 'mp4',
             'writesubtitles': True,
@@ -725,11 +749,11 @@ async def process_youtube_download_task(task_id: str, request: YouTubeDownloadRe
                 last_error = attempt_error
                 attempt_errors.append(attempt_error)
                 logger.warning(f"Tentativa {index + 1} de download falhou: {attempt_error}")
-                if list(download_dir.glob("*.mp4")):
+                if _final_videos(download_dir):
                     # O vídeo já veio; só a legenda falhou.
                     last_error = None
                     break
-        if last_error and not list(download_dir.glob("*.mp4")):
+        if last_error and not _final_videos(download_dir):
             # As tentativas com outros "clients" repetem um erro genérico de formato; o
             # motivo real (ex.: ffmpeg ausente) fica numa tentativa anterior.
             root_error = next((e for e in attempt_errors if _is_missing_ffmpeg_error(e)), last_error)
@@ -739,7 +763,15 @@ async def process_youtube_download_task(task_id: str, request: YouTubeDownloadRe
 
         
         # 查找下载的文件
-        video_files = list(download_dir.glob("*.mp4"))
+        video_files = _final_videos(download_dir)
+        if not video_files:
+            # Última chance: formato único com áudio e vídeo juntos.
+            try:
+                single = dict(no_subs); single['format'] = 'best[acodec!=none][vcodec!=none]/best'
+                await loop.run_in_executor(None, download_sync, request.url, single)
+            except Exception as e:
+                logger.warning(f"Download com formato único falhou: {e}")
+            video_files = _final_videos(download_dir)
         subtitle_files = list(download_dir.glob("*.srt"))
         
         if not video_files:
