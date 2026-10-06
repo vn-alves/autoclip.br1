@@ -77,6 +77,17 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version "^2.0"
 
+      - name: Sync app version with tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          python3 - "$V" <<'PY'
+          import re,sys
+          v=sys.argv[1]
+          for f,pat,rep in [("src-tauri/tauri.conf.json",r'"version": "[^"]+"',f'"version": "{v}"'),("src-tauri/Cargo.toml",r'(?m)^version = "[^"]+"',f'version = "{v}"')]:
+              s=open(f).read(); open(f,"w").write(re.sub(pat,rep,s,count=1))
+          PY
+
       - name: Build desktop app (PBS route)
         env:
           # PostHog analytics. The phc_ key is a public client key (it ships in
@@ -141,6 +152,14 @@ jobs:
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version "^2.0"
+
+      - name: Sync app version with tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          sed -i.bak -E "0,/\"version\": \"[^\"]+\"/s//\"version\": \"$V\"/" src-tauri/tauri.conf.json
+          sed -i.bak -E "0,/^version = \"[^\"]+\"/s//version = \"$V\"/" src-tauri/Cargo.toml
+          grep '"version"' src-tauri/tauri.conf.json
 
       - name: Build desktop app (PBS route)
         env:
