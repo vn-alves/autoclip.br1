@@ -20,6 +20,8 @@ const UpdatesSection: React.FC = () => {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState<InstallProgress | null>(null)
   const [installing, setInstalling] = useState(false)
+  // Links de download resolvem a release mais recente; fallback na última versão conhecida.
+  const [downloads, setDownloads] = useState({ windows: WINDOWS_DOWNLOAD_URL, macos: MACOS_DOWNLOAD_URL })
 
   const check = async () => {
     setChecking(true); setError('')
