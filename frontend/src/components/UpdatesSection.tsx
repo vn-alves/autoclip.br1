@@ -3,7 +3,7 @@ import { message } from 'antd'
 import { Btn, ProgressLine, Row, Section, StatusDot } from '../ui'
 import { isTauri } from '../utils/isTauri'
 import { openExternalLink } from '../utils/externalLinks'
-import { MACOS_DOWNLOAD_URL, WINDOWS_DOWNLOAD_URL } from '../config/downloads'
+import { MACOS_DOWNLOAD_URL, WINDOWS_DOWNLOAD_URL, resolveDownloadUrls } from '../config/downloads'
 import {
   checkForUpdate, detectPlatform, getCurrentVersion, installUpdate,
   type InstallProgress, type UpdateInfo,
@@ -20,6 +20,8 @@ const UpdatesSection: React.FC = () => {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState<InstallProgress | null>(null)
   const [installing, setInstalling] = useState(false)
+  // Links de download resolvem a release mais recente; fallback na última versão conhecida.
+  const [downloads, setDownloads] = useState({ windows: WINDOWS_DOWNLOAD_URL, macos: MACOS_DOWNLOAD_URL })
 
   const check = async () => {
     setChecking(true); setError('')
@@ -27,7 +29,11 @@ const UpdatesSection: React.FC = () => {
     finally { setChecking(false) }
   }
 
-  useEffect(() => { getCurrentVersion().then(setCurrent); check() }, [])
+  useEffect(() => {
+    getCurrentVersion().then(setCurrent)
+    check()
+    resolveDownloadUrls().then((r) => setDownloads({ windows: r.windows, macos: r.macos }))
+  }, [])
 
   const install = async () => {
     if (!info) return
@@ -95,8 +101,8 @@ const UpdatesSection: React.FC = () => {
         {!desktop && (
           <Row label="Baixar o aplicativo" hint="Instale uma vez; depois as atualizações chegam direto pelo app.">
             <div style={{ display: 'flex', gap: 8 }}>
-              <Btn size="sm" onClick={() => openExternalLink(WINDOWS_DOWNLOAD_URL)}>Windows</Btn>
-              <Btn size="sm" onClick={() => openExternalLink(MACOS_DOWNLOAD_URL)}>macOS</Btn>
+              <Btn size="sm" onClick={() => openExternalLink(downloads.windows)}>Windows</Btn>
+              <Btn size="sm" onClick={() => openExternalLink(downloads.macos)}>macOS</Btn>
             </div>
           </Row>
         )}
