@@ -192,6 +192,19 @@ jobs:
       - name: List artifacts
         run: ls -la dist
 
+      # Renomeia para nomes fixos (sem versão) para que os links
+      # /releases/latest/download/<nome> do site apontem sempre para a
+      # versão mais recente, sem precisar editar o frontend a cada release.
+      - name: Rename artifacts to stable names
+        run: |
+          set -e
+          exe=$(ls dist/*x64-setup.exe | head -n 1)
+          dmg=$(ls dist/*aarch64.dmg | head -n 1)
+          rm -f dist/*.exe dist/*.dmg
+          [ -n "$exe" ] && cp "$exe" dist/AutoClip.Desktop_x64-setup.exe
+          [ -n "$dmg" ] && cp "$dmg" dist/AutoClip.Desktop_aarch64.dmg
+          ls -la dist
+
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
