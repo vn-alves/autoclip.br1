@@ -1,7 +1,7 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Icon } from '../ui'
-import { WINDOWS_DOWNLOAD_URL, MACOS_DOWNLOAD_URL } from '../config/downloads'
+import { resolveDownloadUrls, WINDOWS_DOWNLOAD_URL, MACOS_DOWNLOAD_URL } from '../config/downloads'
 import { openExternalLink } from '../utils/externalLinks'
 import { markEnteredApp } from '../utils/webEntry'
 import './LandingPage.css'
@@ -56,11 +56,18 @@ const STEPS = [
 const LandingPage: React.FC = () => {
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
+  // Resolve a release mais recente no GitHub; se falhar, usa os links fixos da última versão conhecida.
+  const [urls, setUrls] = useState({ windows: WINDOWS_DOWNLOAD_URL, macos: MACOS_DOWNLOAD_URL })
+  useEffect(() => {
+    let alive = true
+    resolveDownloadUrls().then((r) => { if (alive) setUrls({ windows: r.windows, macos: r.macos }) })
+    return () => { alive = false }
+  }, [])
 
   const enterPlatform = () => { markEnteredApp(); navigate('/') }
   const goToLogin = () => { markEnteredApp(); navigate('/settings') }
-  const downloadWindows = () => openExternalLink(WINDOWS_DOWNLOAD_URL)
-  const downloadMacos = () => openExternalLink(MACOS_DOWNLOAD_URL)
+  const downloadWindows = () => openExternalLink(urls.windows)
+  const downloadMacos = () => openExternalLink(urls.macos)
 
   return (
     <div className="lp">
