@@ -12,6 +12,7 @@ interface LayerPanelProps {
   onMoveUp: (id: string) => void
   onMoveDown: (id: string) => void
   onRemove: (id: string) => void
+  onDuplicate: (id: string) => void
   onTimeRangeChange: (id: string, startTime: number, endTime: number) => void
   onAddFiles: (files: FileList) => void
   onSetFitMode: (id: string, mode: 'contain' | 'cover') => void
@@ -50,7 +51,7 @@ const clampSeconds = (v: number, duration: number): number => {
  */
 const LayerPanel: React.FC<LayerPanelProps> = ({
   layers, selectedLayerId, duration,
-  onSelect, onToggleVisible, onRename, onMoveUp, onMoveDown, onRemove, onTimeRangeChange, onAddFiles,
+  onSelect, onToggleVisible, onRename, onMoveUp, onMoveDown, onRemove, onDuplicate, onTimeRangeChange, onAddFiles,
   onSetFitMode, uploadError,
   subtitleAvailable, subtitleVisible, onToggleSubtitleVisible,
   allowSecondaryLayers = true,
@@ -128,6 +129,9 @@ const LayerPanel: React.FC<LayerPanelProps> = ({
                 )}
               </div>
               <div className="ac-layer-row-actions">
+                <button type="button" onClick={(e) => { e.stopPropagation(); onDuplicate(layer.id) }} aria-label="Duplicar camada" title="Duplicar camada">
+                  <Icon.Copy size={12} />
+                </button>
                 <button type="button" disabled={isTop} onClick={() => onMoveUp(layer.id)} aria-label="Mover para cima" title="Mover para cima">
                   <span style={{ display: 'inline-flex', transform: 'rotate(180deg)' }}><Icon.Down size={12} /></span>
                 </button>

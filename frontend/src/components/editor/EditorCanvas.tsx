@@ -169,7 +169,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
 
   const dims = CANVAS_DIMENSIONS[format]
   const canvasAspect = dims.width / dims.height
-  const mainLayer = layers.find((l) => l.isMain) ?? layers[0]
+  const mainLayer = layers.find((l) => l.isMain && !l.isDuplicate) ?? layers[0]
   const activeIds = new Set(findActiveLayers(layers, currentTime).map((l) => l.id))
   const selectedLayer = layers.find((l) => l.id === selectedLayerId) ?? null
 
@@ -306,7 +306,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   // tempo relativo do arquivo = currentTime - layer.startTime (item 14).
   useEffect(() => {
     for (const layer of layers) {
-      if (layer.isMain) continue
+      if (layer.isMain && !layer.isDuplicate) continue
       const el = videoEls[layer.id]
       if (!el) continue
       const active = layer.visible && currentTime >= layer.startTime && currentTime <= layer.endTime
@@ -465,15 +465,16 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
 
         {orderedLayers.map((layer) => {
           const isActive = activeIds.has(layer.id)
+          const isTrueMain = layer.isMain && !layer.isDuplicate
           return (
             <video
               key={layer.id}
-              ref={getVideoRefCallback(layer.id, layer.isMain)}
+              ref={getVideoRefCallback(layer.id, isTrueMain)}
               src={layer.source}
               className="ac-editor-video"
               draggable={false}
               playsInline
-              muted={!layer.isMain}
+              muted={!isTrueMain}
               // 'cover': o conteúdo NUNCA deforma não importa o formato da caixa (o usuário
               // pode redimensionar livremente pra escolher o crop) — quem garante isso é o
               // object-fit, não uma trava no resize. 'contain'/Normal continua 'fill' (a caixa
@@ -530,11 +531,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                 // do frame atual. Sem custo perceptível (não altera o tempo de reprodução real).
                 if (e.currentTarget.currentTime === 0) e.currentTarget.currentTime = 0.01
               }}
-              onTimeUpdate={layer.isMain ? onMainTimeUpdate : undefined}
-              onDurationChange={layer.isMain ? (e) => onMainDurationChange(e.currentTarget.duration || 0) : undefined}
-              onEnded={layer.isMain ? onMainEnded : undefined}
-              onPlay={layer.isMain ? () => onMainPlayStateChange(true) : undefined}
-              onPause={layer.isMain ? () => onMainPlayStateChange(false) : undefined}
+              onTimeUpdate={isTrueMain ? onMainTimeUpdate : undefined}
+              onDurationChange={isTrueMain ? (e) => onMainDurationChange(e.currentTarget.duration || 0) : undefined}
+              onEnded={isTrueMain ? onMainEnded : undefined}
+              onPlay={isTrueMain ? () => onMainPlayStateChange(true) : undefined}
+              onPause={isTrueMain ? () => onMainPlayStateChange(false) : undefined}
             />
           )
         })}

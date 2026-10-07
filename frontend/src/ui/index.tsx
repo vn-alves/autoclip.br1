@@ -152,6 +152,7 @@ export const Icon = {
   Eye: (p?: { size?: number }) => <I size={p?.size} d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 100-6 3 3 0 000 6z" />,
   EyeOff: (p?: { size?: number }) => <I size={p?.size} d="M2 2l20 20M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-3.22 4.64M6.61 6.61A18.5 18.5 0 001 12s4 8 11 8a10.94 10.94 0 005.06-1.23M9.53 9.53a3 3 0 004.24 4.24" />,
   Video: (p?: { size?: number }) => <I size={p?.size} d="M2 5h15v14H2zM17 9l6-4v10l-6-4z" />,
+  Copy: (p?: { size?: number }) => <I size={p?.size} d="M8 8h12v12H8z M4 16V4h12" />,
 }
 
 /* ---------- helpers ---------- */

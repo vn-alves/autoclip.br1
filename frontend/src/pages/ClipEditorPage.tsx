@@ -12,7 +12,7 @@ import {
   BackgroundType, CanvasFormat, EditorState, NormalizedTransform, CANVAS_DIMENSIONS,
   SubtitlePosition, SubtitlePositionPreset, SubtitleStyle, SubtitleStylePreset, SubtitleWordsPerCaption,
   SubtitleTransition, WordHighlight,
-  createDefaultEditorState, createVideoLayerFromFile, fitTransform, resizeTransformForFormat, SUBTITLE_POSITION_PRESETS,
+  createDefaultEditorState, createVideoLayerFromFile, duplicateVideoLayer, fitTransform, resizeTransformForFormat, SUBTITLE_POSITION_PRESETS,
   groupWordsIntoSegments, splitPlainTextToWords, toEditConfig, applyEditConfig, hasUnuploadedLayers, isDegenerateTransform,
 } from '../components/editor/types'
 import { getWebClip, getWebVideoUrl, getWebProjectBlob } from '../webstore/projects'
@@ -490,6 +490,20 @@ const ClipEditorPage: React.FC = () => {
   }
   const handleMoveLayerUp = (layerId: string) => swapZIndexWithNeighbor(layerId, 'up')
   const handleMoveLayerDown = (layerId: string) => swapZIndexWithNeighbor(layerId, 'down')
+
+  const handleDuplicateLayer = (layerId: string) => {
+    setEditorState((s) => {
+      const sourceLayer = s.layers.find((l) => l.id === layerId)
+      if (!sourceLayer) return s
+      const newLayer = duplicateVideoLayer(sourceLayer, s.layers)
+      // Se for duplicata do vídeo principal (ou de uma já duplicada que usa o arquivo local), copia
+      // a referência no pendingFilesRef (se for upload local). Mas a layer principal tem URL web.
+      if (pendingFilesRef.current[sourceLayer.id]) {
+        pendingFilesRef.current[newLayer.id] = pendingFilesRef.current[sourceLayer.id]
+      }
+      return { ...s, layers: [...s.layers, newLayer], selectedLayerId: newLayer.id }
+    })
+  }
 
   const handleRemoveLayer = (layerId: string) => {
     setEditorState((s) => {
@@ -1110,6 +1124,7 @@ const ClipEditorPage: React.FC = () => {
             onMoveUp={handleMoveLayerUp}
             onMoveDown={handleMoveLayerDown}
             onRemove={handleRemoveLayer}
+            onDuplicate={handleDuplicateLayer}
             onTimeRangeChange={handleLayerTimeRangeChange}
             onAddFiles={handleAddVideoFiles}
             onSetFitMode={handleSetFitMode}

@@ -114,6 +114,8 @@ export interface VideoLayer {
    * (undefined) tratam como false — é exatamente o caso que precisava ser corrigido.
    */
   customized: boolean
+  /** true se for uma cópia (ex. duplicação do vídeo principal). */
+  isDuplicate?: boolean
 }
 
 // fitMode 'contain' (Normal) por padrão na layer principal: 'cover' pode deixar o box real do
@@ -150,6 +152,21 @@ export function createVideoLayerFromFile(file: File, existingLayers: VideoLayer[
     isMain: false,
     fitMode: 'cover',
     customized: false,
+  }
+}
+
+/** Duplica uma layer existente (útil para duplicar o vídeo principal sem precisar de upload). */
+export function duplicateVideoLayer(sourceLayer: VideoLayer, existingLayers: VideoLayer[]): VideoLayer {
+  secondaryLayerCounter += 1
+  const maxZ = existingLayers.reduce((m, l) => Math.max(m, l.zIndex), 0)
+  return {
+    ...sourceLayer,
+    id: `layer-dup-${Date.now()}-${secondaryLayerCounter}`,
+    name: `${sourceLayer.name} (Cópia)`,
+    zIndex: maxZ + 1,
+    isDuplicate: true,
+    transform: { ...sourceLayer.transform, x: sourceLayer.transform.x + 0.05, y: sourceLayer.transform.y + 0.05 },
+    customized: true,
   }
 }
 
@@ -641,6 +658,7 @@ export interface EditConfigLayer {
   assetId?: string
   fitMode?: 'contain' | 'cover'
   customized?: boolean
+  isDuplicate?: boolean
 }
 
 export interface EditConfig {
@@ -679,6 +697,7 @@ export function toEditConfig(state: EditorState): EditConfig {
       assetId: l.assetId,
       fitMode: l.fitMode,
       customized: l.customized,
+      isDuplicate: l.isDuplicate,
     })),
     subtitle: {
       wordsPerCaption: state.subtitle.wordsPerCaption,
@@ -730,6 +749,7 @@ export function applyEditConfig(
       // deixa o auto-fit por fitMode assumir o controle de novo em vez de travar pra sempre
       // no transform antigo, com borda preta).
       customized: l.customized ?? false,
+      isDuplicate: l.isDuplicate,
     })),
     subtitle: {
       style: { ...DEFAULT_SUBTITLE_STYLE, ...config.subtitle.style },
