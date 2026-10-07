@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AutoClip Desktop",
-  "version": "1.9.6",
+  "version": "2.0",
   "identifier": "com.autoclip.desktop",
   "build": {
     "beforeDevCommand": "cd ../frontend && npm run dev",
@@ -32,18 +32,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "category": "DeveloperTool",
     "shortDescription": "AI视频切片工具桌面版",
     "longDescription": "AutoClip是一款基于AI的智能视频切片工具，支持自动识别精彩片段并生成合集。",
     "copyright": "© 2024 AutoClip Team",
-      "resources": [],
+    "resources": [],
     "externalBin": [],
     "macOS": {
       "frameworks": [],
