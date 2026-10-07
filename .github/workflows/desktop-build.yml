@@ -198,11 +198,18 @@ jobs:
       - name: Rename artifacts to stable names
         run: |
           set -e
-          exe=$(ls dist/*x64-setup.exe | head -n 1)
-          dmg=$(ls dist/*aarch64.dmg | head -n 1)
-          rm -f dist/*.exe dist/*.dmg
-          [ -n "$exe" ] && cp "$exe" dist/AutoClip.Desktop_x64-setup.exe
-          [ -n "$dmg" ] && cp "$dmg" dist/AutoClip.Desktop_aarch64.dmg
+          for f in dist/*x64-setup.exe; do
+            if [ -f "$f" ]; then
+              mv "$f" dist/AutoClip.Desktop_x64-setup.exe
+              break
+            fi
+          done
+          for f in dist/*aarch64.dmg; do
+            if [ -f "$f" ]; then
+              mv "$f" dist/AutoClip.Desktop_aarch64.dmg
+              break
+            fi
+          done
           ls -la dist
 
       - name: Create / update GitHub Release
