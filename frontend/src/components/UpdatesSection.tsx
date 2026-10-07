@@ -29,7 +29,11 @@ const UpdatesSection: React.FC = () => {
     finally { setChecking(false) }
   }
 
-  useEffect(() => { getCurrentVersion().then(setCurrent); check() }, [])
+  useEffect(() => {
+    getCurrentVersion().then(setCurrent)
+    check()
+    resolveDownloadUrls().then((r) => setDownloads({ windows: r.windows, macos: r.macos }))
+  }, [])
 
   const install = async () => {
     if (!info) return
