@@ -52,10 +52,25 @@ impl BackendManager {
             return Err("后端服务已在运行".to_string());
         }
 
+        // Servidores de aberturas anteriores que ficaram vivos (app fechado à força,
+        // atualização, travamento) disputam CPU/arquivos com o novo e deixam a abertura
+        // lenta ou travada. Encerra-os antes de iniciar outro.
+        Self::kill_stale_backends(&app_handle);
+
         // 启动后端服务
         let launch = self.get_backend_launch(&app_handle)?;
 
         let mut cmd = Command::new(&launch.program);
+        // Grupo de processos próprio: ao fechar o app dá para encerrar o servidor E o
+        // processador de tarefas (filho dele) de uma vez, sem deixar processos órfãos.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        // Os .pyc já vêm pré-compilados no pacote; não reescrever dentro do .app
+        // (que é assinado e pode estar em local somente leitura).
+        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
         cmd.args(&launch.args)
             .current_dir(&launch.working_dir)
             .stdout(Stdio::piped())
@@ -112,6 +127,9 @@ impl BackendManager {
         match cmd.spawn() {
             Ok(child) => {
                 let pid = child.id();
+                if let Some(pid_file) = Self::pid_file(&app_handle) {
+                    let _ = std::fs::write(&pid_file, pid.to_string());
+                }
                 let start_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|duration| duration.as_secs())
@@ -145,20 +163,136 @@ impl BackendManager {
 
     pub fn stop(&self) -> Result<(), String> {
         let mut status = self.status.lock().unwrap();
-        if !status.is_running {
+        let mut process = self.process.lock().unwrap();
+        if !status.is_running && process.is_none() {
             return Err("后端服务未运行".to_string());
         }
 
-        let mut process = self.process.lock().unwrap();
         if let Some(mut child) = process.take() {
-            if let Err(e) = child.kill() {
-                return Err(format!("停止后端服务失败: {}", e));
+            let pid = child.id();
+            // Pede para encerrar com calma (servidor + processador de tarefas)…
+            Self::signal_tree(pid, false);
+            let mut exited = false;
+            for _ in 0..30 {
+                if let Ok(Some(_)) = child.try_wait() {
+                    exited = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            // …e força se não sair em 3s. Mata o grupo inteiro para não sobrar órfão.
+            Self::signal_tree(pid, true);
+            if !exited {
+                let _ = child.kill();
             }
             let _ = child.wait();
         }
 
         *status = BackendStatus::default();
         Ok(())
+    }
+
+    fn pid_file(app_handle: &AppHandle) -> Option<PathBuf> {
+        let base = std::env::var_os("AUTOCLIP_APP_DIR")
+            .map(PathBuf::from)
+            .or_else(|| app_handle.path().data_dir().ok().map(|d| d.join("AutoClip")))?;
+        let _ = std::fs::create_dir_all(&base);
+        Some(base.join("desktop-backend.pid"))
+    }
+
+    /// Envia sinal ao processo e a todo o seu grupo/árvore de filhos.
+    fn signal_tree(pid: u32, force: bool) {
+        #[cfg(unix)]
+        {
+            let sig = if force { libc::SIGKILL } else { libc::SIGTERM };
+            unsafe {
+                // Grupo (pgid == pid porque usamos process_group(0)) e o próprio processo.
+                libc::kill(-(pid as i32), sig);
+                libc::kill(pid as i32, sig);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let mut c = Command::new("taskkill");
+            c.args(["/PID", &pid.to_string(), "/T"]);
+            if force {
+                c.arg("/F");
+            }
+            c.creation_flags(CREATE_NO_WINDOW)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _ = c.status();
+        }
+    }
+
+    /// Encerra servidores do AutoClip deixados por aberturas anteriores.
+    fn kill_stale_backends(app_handle: &AppHandle) {
+        let own_pid = std::process::id();
+        let mut targets: Vec<u32> = Vec::new();
+
+        #[cfg(unix)]
+        {
+            // Procura pelos processos do servidor empacotado (inclui os que versões
+            // antigas deixaram órfãos, sem arquivo de pid).
+            if let Ok(out) = Command::new("ps").args(["-A", "-o", "pid=,command="]).output() {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    let line = line.trim();
+                    let mut parts = line.splitn(2, ' ');
+                    let pid = parts.next().and_then(|p| p.trim().parse::<u32>().ok());
+                    let command = parts.next().unwrap_or("");
+                    if let Some(pid) = pid {
+                        let is_ours = command.contains("AutoClip Desktop.app")
+                            && (command.contains("backend.desktop_main")
+                                || command.contains("backend.desktop_celery"));
+                        if is_ours && pid != own_pid {
+                            targets.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            if let Some(pid_file) = Self::pid_file(app_handle) {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                {
+                    // Só encerra se o pid ainda for um python (evita matar outro programa
+                    // que reaproveitou o número).
+                    let out = Command::new("tasklist")
+                        .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .output();
+                    if let Ok(out) = out {
+                        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                        if text.contains("python") {
+                            targets.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+
+        for pid in &targets {
+            Self::signal_tree(*pid, false);
+        }
+        if !targets.is_empty() {
+            thread::sleep(Duration::from_millis(800));
+            for pid in &targets {
+                Self::signal_tree(*pid, true);
+            }
+            println!("Encerrados {} servidor(es) antigo(s) do AutoClip", targets.len());
+        }
+
+        if let Some(pid_file) = Self::pid_file(app_handle) {
+            let _ = std::fs::remove_file(pid_file);
+        }
     }
 
     pub fn restart(&self, app_handle: AppHandle) -> Result<(), String> {
